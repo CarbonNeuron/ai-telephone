@@ -354,10 +354,11 @@ internal sealed class AiTelephoneApp
     {
         return
             """
-            Copy the following text exactly as written, word for word. Do not summarize, improve, or change anything. Return only the copied text.
+            Copy the following text exactly as written, word for word.
+            Do not summarize, improve, explain, reformat, or wrap it.
+            Return only the original text and nothing else.
 
-            <text>
-            """ + "\n" + input + "\n</text>";
+            """ + "\n" + input;
     }
 
     private static List<string> Tokenize(string text)

@@ -11,7 +11,7 @@ A .NET CLI that repeatedly sends a text passage through an Ollama model and show
 ## Run
 
 ```bash
-dotnet run -- --text "The quick brown fox jumps over the lazy dog." --rounds 5 --model llama3 --show-diff
+dotnet run -- --text "The quick brown fox jumps over the lazy dog." --rounds 5 --model llama3 --temperature 0.2 --show-diff
 ```
 
 Or pipe text through stdin:
@@ -25,6 +25,7 @@ printf '# Heading\n\nSome markdown text.\n' | dotnet run -- --rounds 3 --show-di
 - `--text`: Initial text input. If omitted, stdin is read.
 - `--rounds`: Number of rounds to run. Defaults to `5`.
 - `--model`: Ollama model name. Defaults to `llama3`.
+- `--temperature`: Ollama sampling temperature. Defaults to `0.8`.
 - `--show-diff`: Show word-level highlighted comparisons after the rounds finish.
 
 ## Notes

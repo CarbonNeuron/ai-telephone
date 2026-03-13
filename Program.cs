@@ -2,6 +2,7 @@ using System.Text;
 using System.Text.RegularExpressions;
 using MDView;
 using OllamaSharp;
+using OllamaSharp.Models;
 using Spectre.Console;
 using Spectre.Console.Rendering;
 
@@ -18,6 +19,7 @@ internal sealed class AiTelephoneApp
 {
     private const string DefaultModel = "llama3";
     private const int DefaultRounds = 5;
+    private const float DefaultTemperature = 0.8f;
     private static readonly Uri DefaultOllamaUri = new(GetOllamaHost());
 
     public async Task<int> RunAsync(string[] args, CancellationToken cancellationToken)
@@ -60,7 +62,7 @@ internal sealed class AiTelephoneApp
 
         try
         {
-            await AnsiConsole.Live(BuildLiveView(history, null))
+            await AnsiConsole.Live(BuildLiveView(history, null, options))
                 .AutoClear(false)
                 .StartAsync(async context =>
                 {
@@ -69,21 +71,32 @@ internal sealed class AiTelephoneApp
                         var currentInput = history[^1].Text;
                         var inFlight = new RoundSnapshot(roundNumber, options.Model, string.Empty);
 
-                        context.UpdateTarget(BuildLiveView(history, inFlight));
+                        context.UpdateTarget(BuildLiveView(history, inFlight, options));
                         context.Refresh();
 
-                        await foreach (var chunk in client.GenerateAsync(BuildPrompt(currentInput), null, cancellationToken))
+                        var request = new GenerateRequest
+                        {
+                            Model = options.Model,
+                            Prompt = BuildPrompt(currentInput),
+                            Stream = true,
+                            Options = new RequestOptions
+                            {
+                                Temperature = options.Temperature
+                            }
+                        };
+
+                        await foreach (var chunk in client.GenerateAsync(request, cancellationToken))
                         {
                             if (!string.IsNullOrEmpty(chunk?.Response))
                             {
                                 inFlight.Text += chunk.Response;
-                                context.UpdateTarget(BuildLiveView(history, inFlight));
+                                context.UpdateTarget(BuildLiveView(history, inFlight, options));
                                 context.Refresh();
                             }
                         }
 
                         history.Add(inFlight);
-                        context.UpdateTarget(BuildLiveView(history, null));
+                        context.UpdateTarget(BuildLiveView(history, null, options));
                         context.Refresh();
                     }
                 });
@@ -110,6 +123,7 @@ internal sealed class AiTelephoneApp
         string? text = null;
         var rounds = DefaultRounds;
         var model = DefaultModel;
+        var temperature = DefaultTemperature;
         var showDiff = false;
         var showHelp = false;
 
@@ -135,6 +149,9 @@ internal sealed class AiTelephoneApp
                 case "--model":
                     model = GetNextValue(args, ref index, "--model");
                     break;
+                case "--temperature":
+                    temperature = ParseTemperature(GetNextValue(args, ref index, "--temperature"));
+                    break;
                 default:
                     if (arg.StartsWith("--text=", StringComparison.Ordinal))
                     {
@@ -147,6 +164,10 @@ internal sealed class AiTelephoneApp
                     else if (arg.StartsWith("--model=", StringComparison.Ordinal))
                     {
                         model = arg["--model=".Length..];
+                    }
+                    else if (arg.StartsWith("--temperature=", StringComparison.Ordinal))
+                    {
+                        temperature = ParseTemperature(arg["--temperature=".Length..]);
                     }
                     else
                     {
@@ -162,7 +183,7 @@ internal sealed class AiTelephoneApp
             text = await Console.In.ReadToEndAsync(cancellationToken);
         }
 
-        return new CliOptions(text?.TrimEnd('\r', '\n') ?? string.Empty, rounds, model, showDiff, showHelp);
+        return new CliOptions(text?.TrimEnd('\r', '\n') ?? string.Empty, rounds, model, temperature, showDiff, showHelp);
     }
 
     private static string GetNextValue(string[] args, ref int index, string optionName)
@@ -186,12 +207,23 @@ internal sealed class AiTelephoneApp
         return parsed;
     }
 
+    private static float ParseTemperature(string value)
+    {
+        if (!float.TryParse(value, out var parsed) || float.IsNaN(parsed) || float.IsInfinity(parsed) || parsed < 0)
+        {
+            throw new CliUsageException("--temperature must be a number greater than or equal to 0.");
+        }
+
+        return parsed;
+    }
+
     private static void WriteUsage()
     {
         var table = new Table().Border(TableBorder.Rounded).AddColumn("Option").AddColumn("Description");
         table.AddRow("`--text`", "Initial text passage. If omitted, stdin is read.");
         table.AddRow("`--rounds`", $"Number of telephone rounds. Default: {DefaultRounds}.");
         table.AddRow("`--model`", $"Ollama model name. Default: `{DefaultModel}`.");
+        table.AddRow("`--temperature`", $"Ollama sampling temperature. Default: {DefaultTemperature:0.###}.");
         table.AddRow("`--show-diff`", "Highlight changed words between each pass in the final comparison.");
         table.AddRow("`--help`", "Show usage.");
 
@@ -199,18 +231,18 @@ internal sealed class AiTelephoneApp
         AnsiConsole.Write(table);
         AnsiConsole.MarkupLine("");
         AnsiConsole.MarkupLine("[grey]Examples[/]");
-        AnsiConsole.MarkupLine("  dotnet run -- --text \"The quick brown fox\" --rounds 5 --model llama3");
+        AnsiConsole.MarkupLine($"  dotnet run -- --text \"The quick brown fox\" --rounds 5 --model llama3 --temperature {DefaultTemperature:0.###}");
         AnsiConsole.MarkupLine("  echo \"A markdown paragraph\" | dotnet run -- --rounds 3 --show-diff");
         AnsiConsole.MarkupLine("");
         AnsiConsole.MarkupLine($"[grey]Ollama endpoint:[/] {Markup.Escape(DefaultOllamaUri.ToString())}");
     }
 
-    private static IRenderable BuildLiveView(IReadOnlyList<RoundSnapshot> history, RoundSnapshot? inFlight)
+    private static IRenderable BuildLiveView(IReadOnlyList<RoundSnapshot> history, RoundSnapshot? inFlight, CliOptions options)
     {
         var renderables = new List<IRenderable>
         {
             new Rule("[yellow]AI Telephone[/]").LeftJustified(),
-            BuildMetadataPanel(history.Count - 1, inFlight?.Model ?? history[^1].Model)
+            BuildMetadataPanel(history.Count - 1, inFlight?.Model ?? history[^1].Model, options.Temperature)
         };
 
         foreach (var snapshot in history)
@@ -226,14 +258,16 @@ internal sealed class AiTelephoneApp
         return new Rows(renderables);
     }
 
-    private static IRenderable BuildMetadataPanel(int completedRounds, string model)
+    private static IRenderable BuildMetadataPanel(int completedRounds, string model, float temperature)
     {
         var grid = new Grid();
         grid.AddColumn();
         grid.AddColumn();
+        grid.AddColumn();
         grid.AddRow(
             new Markup($"[bold]Completed rounds:[/] {completedRounds}"),
-            new Markup($"[bold]Model:[/] {Markup.Escape(model)}"));
+            new Markup($"[bold]Model:[/] {Markup.Escape(model)}"),
+            new Markup($"[bold]Temperature:[/] {temperature:0.###}"));
 
         return new Panel(grid)
         {
@@ -478,7 +512,7 @@ internal sealed class AiTelephoneApp
     }
 }
 
-internal sealed record CliOptions(string Text, int Rounds, string Model, bool ShowDiff, bool ShowHelp);
+internal sealed record CliOptions(string Text, int Rounds, string Model, float Temperature, bool ShowDiff, bool ShowHelp);
 
 internal sealed class RoundSnapshot(int roundNumber, string model, string text)
 {
